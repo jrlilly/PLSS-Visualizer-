@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>PLSS Visualizer v 14</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+    }
+
+    #grid {
+      display: grid;
+      grid-template-columns: repeat(16, 25px);
+      grid-template-rows: repeat(16, 25px);
+      gap: 1px;
+      position: relative;
+      margin-top: 20px;
+      user-select: none;
+    }
+
+    .cell {
+      width: 25px;
+      height: 25px;
+      background-color: white;
+      border: 1px solid #ccc;
+      box-sizing: border-box;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+    }
+
+    .cell:hover {
+      background-color: #d0f0ff;
+    }
+
+    .selected {
+      background-color: cyan;
+    }
+
+    /* Thick black borders for main quarters */
+    .border-top    { border-top: 3px solid black !important; }
+    .border-left   { border-left: 3px solid black !important; }
+    .border-right  { border-right: 3px solid black !important; }
+    .border-bottom { border-bottom: 3px solid black !important; }
+
+    /* Dark grey (50% black) subgrid lines for quarter-quarter subdivisions */
+    .subgrid-line {
+      position: absolute;
+      background-color: #808080;
+      z-index: 5;
+      pointer-events: none;
+    }
+    .subgrid-v1 { left: calc(4 * (25px + 1px) - 0.5px); width: 1px; top: 0; bottom: 0; }
+    .subgrid-v2 { left: calc(12 * (25px + 1px) - 0.5px); width: 1px; top: 0; bottom: 0; }
+    .subgrid-h1 { top: calc(4 * (25px + 1px) - 0.5px); height: 1px; left: 0; right: 0; }
+    .subgrid-h2 { top: calc(12 * (25px + 1px) - 0.5px); height: 1px; left: 0; right: 0; }
+
+    /* Container for buttons and input */
+    .controls {
+      margin-top: 10px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    #aliquot-input {
+      flex-grow: 1;
+      padding: 5px;
+      font-size: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <h1>PLSS Visualizer</h1>
+  
+  <div class="controls">
+    <input id="aliquot-input" type="text" size="60" placeholder="e.g. NW 1/4 SE 1/4, N 1/2" />
+    <button id="visualize">Visualize</button>
+    <button id="reset">Reset</button>
+    <button id="export-png">Export PNG</button>
+    <button id="export-pdf">Export PDF</button>
+  </div>
+  
+  <div id="grid"></div>
+
+  <!-- Libraries for export -->
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+  <script>
+    const GRID_SIZE = 16;
+    const MAX_LEVELS = 4;
+
+    const QUARTER_POSITIONS = {
+      'NW': [0, 0],
+      'NE': [0, 1],
+      'SW': [1, 0],
+      'SE': [1, 1]
+    };
+
+    const HALF_POSITIONS = {
+      'N': [0, 0, 8, 16],
+      'S': [8, 0, 8, 16],
+      'W': [0, 0, 16, 8],
+      'E': [0, 8, 16, 8]
+    };
+
+    function initGrid() {
+      const grid = document.getElementById('grid');
+      grid.innerHTML = '';
+
+      for (let r = 0; r < GRID_SIZE; r++) {
+        for (let c = 0; c < GRID_SIZE; c++) {
+          const div = document.createElement('div');
+          div.classList.add('cell');
+          div.id = `cell-${r}-${c}`;
+          div.dataset.row = r;
+          div.dataset.col = c;
+
+          if (r === 0 || r === 8) div.classList.add('border-top');
+          if (c === 0 || c === 8) div.classList.add('border-left');
+          if (r === GRID_SIZE - 1) div.classList.add('border-bottom');
+          if (c === GRID_SIZE - 1) div.classList.add('border-right');
+
+          div.addEventListener('click', onCellClick);
+          grid.appendChild(div);
+        }
+      }
+
+      ['subgrid-v1','subgrid-v2','subgrid-h1','subgrid-h2'].forEach(cls => {
+        const line = document.createElement('div');
+        line.className = `subgrid-line ${cls}`;
+        grid.appendChild(line);
+      });
+    }
+
+    function parseAliquots(input) {
+      const parts = input.toUpperCase().split(',').map(p => p.trim());
+      const paths = [];
+
+      parts.forEach(part => {
+        const tokens = part.split(/\s+/);
+        const path = [];
+        for (let i = 0; i < tokens.length - 1; i++) {
+          if (QUARTER_POSITIONS[tokens[i]] && tokens[i+1] === '1/4') {
+            path.push({ type: 'quarter', value: tokens[i] });
+            i++;
+          } else if (HALF_POSITIONS[tokens[i]] && tokens[i+1] === '1/2') {
+            path.push({ type: 'half', value: tokens[i] });
+            i++;
+          }
+        }
+        if (path.length > 0) paths.push(path.reverse());
+      });
+
+      return paths;
+    }
+
+    function getCellsFromPath(path) {
+      let regions = [{ row: 0, col: 0, size: GRID_SIZE }];
+      path.forEach(part => {
+        const newRegions = [];
+        regions.forEach(({row, col, size}) => {
+          const half = size / 2;
+          if (part.type === 'quarter') {
+            const [rMul, cMul] = QUARTER_POSITIONS[part.value];
+            newRegions.push({ row: row + rMul * half, col: col + cMul * half, size: half });
+          } else if (part.type === 'half') {
+            const [rOff, cOff, rSize, cSize] = HALF_POSITIONS[part.value];
+            for (let rr = 0; rr < rSize; rr++) {
+              for (let cc = 0; cc < cSize; cc++) {
+                newRegions.push({ row: row + rOff + rr, col: col + cOff + cc, size: 1 });
+              }
+            }
+          }
+        });
+        regions = newRegions;
+      });
+
+      return regions.flatMap(({row, col, size}) =>
+        Array.from({ length: size }).flatMap((_, dr) =>
+          Array.from({ length: size }).map((_, dc) => ({
+            row: row + dr,
+            col: col + dc
+          }))
+        )
+      );
+    }
+
+    function highlightCells(paths) {
+      initGrid();
+      paths.forEach(fullPath => {
+        const cells = getCellsFromPath(fullPath); // Only use full path
+        cells.forEach(({row, col}) => {
+          const cell = document.getElementById(`cell-${row}-${col}`);
+          if (cell) {
+            cell.classList.add('selected');
+          }
+        });
+      });
+    }
+
+    function getAliquotPathFromCell(row, col) {
+      let size = GRID_SIZE;
+      const path = [];
+      for (let lvl = 0; lvl < MAX_LEVELS; lvl++) {
+        size /= 2;
+        const quadrantRow = Math.floor((row % (size*2)) / size);
+        const quadrantCol = Math.floor((col % (size*2)) / size);
+        for (const [name, [r, c]] of Object.entries(QUARTER_POSITIONS)) {
+          if (r === quadrantRow && c === quadrantCol) {
+            path.push(`${name} 1/4`);
+            break;
+          }
+        }
+      }
+      return path.reverse().join(' ');
+    }
+
+    function onCellClick(e) {
+      const row = +e.target.dataset.row;
+      const col = +e.target.dataset.col;
+      const desc = getAliquotPathFromCell(row, col);
+      const input = document.getElementById('aliquot-input');
+      
+      // Support toggling selection by removing from input if already selected
+      const currentValues = input.value.split(',').map(s => s.trim()).filter(Boolean);
+      const index = currentValues.indexOf(desc);
+      if (index > -1) {
+        currentValues.splice(index, 1);
+      } else {
+        currentValues.push(desc);
+      }
+      input.value = currentValues.join(', ');
+
+      // Update highlight immediately
+      highlightCells(parseAliquots(input.value));
+    }
+
+    document.getElementById('visualize').onclick = () => {
+      highlightCells(parseAliquots(document.getElementById('aliquot-input').value));
+    };
+
+    document.getElementById('reset').onclick = () => {
+      document.getElementById('aliquot-input').value = '';
+      initGrid();
+    };
+
+    // Export PNG button
+    document.getElementById('export-png').onclick = () => {
+      const grid = document.getElementById('grid');
+      html2canvas(grid).then(canvas => {
+        const link = document.createElement('a');
+        link.download = 'plss-grid.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+      }).catch(err => alert('Error exporting PNG: ' + err.message));
+    };
+
+    // Export PDF button
+    document.getElementById('export-pdf').onclick = async () => {
+      const grid = document.getElementById('grid');
+      const { jsPDF } = window.jspdf;
+      try {
+        const canvas = await html2canvas(grid);
+        const imgData = canvas.toDataURL('image/png');
+
+        const pdf = new jsPDF({
+          orientation: 'portrait',
+          unit: 'pt',
+          format: 'letter'
+        });
+
+        const pdfWidth = pdf.internal.pageSize.getWidth();
+        const pdfHeight = pdf.internal.pageSize.getHeight();
+
+        const imgProps = pdf.getImageProperties(imgData);
+        const imgWidth = pdfWidth * 0.9;
+        const imgHeight = (imgProps.height * imgWidth) / imgProps.width;
+
+        pdf.addImage(imgData, 'PNG', (pdfWidth - imgWidth) / 2, 40, imgWidth, imgHeight);
+        pdf.save('plss-grid.pdf');
+      } catch (err) {
+        alert('Error exporting PDF: ' + err.message);
+      }
+    };
+
+    window.onload = initGrid;
+  </script>
+</body>
+</html>
